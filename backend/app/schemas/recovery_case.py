@@ -69,6 +69,21 @@ class DiagnoseResponse(BaseModel):
     systemic_degradation_detected: bool
     is_transient: bool
     diagnosed_at: datetime
+    retrieved_knowledge: List["RetrievedKnowledgeResponse"] = Field(default_factory=list)
+
+
+class RetrievedKnowledgeResponse(BaseModel):
+    scenario: str
+    failure_codes: List[str]
+    description: str
+    likely_root_cause: str
+    recommended_recovery_actions: List[str]
+    retry_guidance: str
+    risk_considerations: str
+    policy_considerations: str
+    do_not_retry_conditions: str
+    escalation_conditions: str
+    applicable_payment_methods: List[str] = Field(default_factory=list)
 
 
 class DecideResponse(BaseModel):

@@ -68,6 +68,28 @@ def test_recovery_cases_api_flow(client: TestClient):
     assert recover_resp.json()["lifecycle_stage_completed"] == "6_MEASURE"
 
 
+def test_diagnose_api_returns_retrieved_knowledge(client: TestClient):
+    """Diagnosis response serializes the knowledge retrieved by DiagnosisService."""
+    sim_resp = client.post(
+        "/api/transactions/simulate-failure",
+        json={
+            "amount": 3750.0,
+            "payment_method": "upi",
+            "transaction_type": "one_time",
+            "failure_code": "BAD_REQUEST_GATEWAY_TIMEOUT",
+        },
+    )
+    assert sim_resp.status_code == 201
+
+    diagnose_resp = client.post(f"/api/recovery-cases/{sim_resp.json()['id']}/diagnose")
+    assert diagnose_resp.status_code == 200
+    knowledge = diagnose_resp.json()["retrieved_knowledge"]
+
+    assert knowledge[0]["scenario"] == "gateway_timeout"
+    assert "smart_retry" in knowledge[0]["recommended_recovery_actions"]
+    assert knowledge[0]["do_not_retry_conditions"]
+
+
 def test_policies_api(client: TestClient):
     """Test Policy Engine configuration and evaluation endpoints."""
     # 1. Get active policy config

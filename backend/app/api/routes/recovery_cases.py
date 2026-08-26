@@ -75,6 +75,10 @@ def diagnose_case(
             systemic_degradation_detected=txn.is_degradation_incident if txn else False,
             is_transient=(txn.failure_category == "temporary") if txn else False,
             diagnosed_at=datetime.now(timezone.utc),
+	    retrieved_knowledge=[
+                item.model_dump() if hasattr(item, "model_dump") else item.__dict__
+                for item in getattr(updated_case, "retrieved_knowledge", [])
+            ],
         )
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e))

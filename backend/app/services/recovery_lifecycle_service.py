@@ -186,6 +186,9 @@ class RecoveryLifecycleService:
         db.add(audit)
         db.commit()
         db.refresh(case)
+        # Keep diagnosis context available to the current API response without
+        # changing RecoveryCase persistence or the recovery lifecycle.
+        case.retrieved_knowledge = diag_result.retrieved_knowledge
         return case
 
     # -------------------------------------------------------------------------
