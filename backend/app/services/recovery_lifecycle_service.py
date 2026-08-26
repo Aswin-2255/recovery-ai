@@ -34,6 +34,7 @@ from app.models import (
 )
 from app.services.diagnosis_service import diagnosis_service
 from app.services.policy_engine import policy_engine
+from app.services.recovery_knowledge_service import recovery_knowledge_service
 from app.services.simulator_service import recovery_simulator
 from app.services.synthetic_generator import FAILURE_CATALOG
 
@@ -246,6 +247,34 @@ class RecoveryLifecycleService:
             reasoning = "Generic payment failure. Recommending dynamic payment link dispatch."
             confidence = 0.75
 
+        deterministic_action = rec_action
+        retrieved_knowledge = recovery_knowledge_service.retrieve(
+            failure_code=txn.failure_code,
+            payment_method=method,
+            amount=txn.amount,
+            retry_count=txn.retry_count,
+            diagnosis=case.root_cause_summary,
+        )
+        supported_knowledge_actions = []
+        executable_actions = {action.value for action in ActionType}
+        for item in retrieved_knowledge[:1]:
+            for action in item.recommended_recovery_actions:
+                if action in executable_actions and action not in supported_knowledge_actions:
+                    supported_knowledge_actions.append(action)
+
+        # Knowledge may refine an otherwise generic smart-retry recommendation,
+        # but it never skips the policy evaluation below or overrides an
+        # escalation/terminal-failure decision.
+        knowledge_influenced_action = False
+        if (
+            rec_action == ActionType.SMART_RETRY.value
+            and rec_action not in supported_knowledge_actions
+            and supported_knowledge_actions
+        ):
+            rec_action = supported_knowledge_actions[0]
+            knowledge_influenced_action = True
+            reasoning += f" Recovery knowledge recommends '{rec_action}' for this failure context."
+
         # Check preliminary policy feasibility
         merchant = db.query(Merchant).filter_by(id=txn.merchant_id).first()
         policy_eval = policy_engine.evaluate(
@@ -270,8 +299,12 @@ class RecoveryLifecycleService:
             policy_rejection_reason=policy_eval.rejection_reason,
             execution_payload_json=json.dumps({
                 "proposed_action": rec_action,
+                "deterministic_action": deterministic_action,
                 "confidence": confidence,
                 "rules_checked": policy_eval.rules_checked,
+                "knowledge_scenarios": [item.scenario for item in retrieved_knowledge],
+                "knowledge_recommended_actions": supported_knowledge_actions,
+                "knowledge_influenced_action": knowledge_influenced_action,
             }),
             created_at=datetime.now(timezone.utc),
         )

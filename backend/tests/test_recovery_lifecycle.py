@@ -1,5 +1,6 @@
 """Integration tests for 6-Stage Revenue Recovery Lifecycle."""
 from datetime import datetime, timezone
+import json
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -21,6 +22,7 @@ from app.models import (
     ActionStatus,
 )
 from app.services.recovery_lifecycle_service import recovery_lifecycle_service
+from app.services.diagnosis_service import diagnosis_service
 
 
 @pytest.fixture
@@ -131,6 +133,61 @@ def test_stage_3_decide_formulates_strategy(lifecycle_db):
 
     audit = lifecycle_db.query(AuditLog).filter_by(entity_id=decision.id, action="DECISION_RECORDED").first()
     assert audit is not None
+
+
+def test_decision_uses_retrieved_knowledge_as_recommendation_signal(lifecycle_db):
+    """Authentication knowledge refines smart retry to a customer-facing action."""
+    txn = Transaction(
+        id="txn_decision_knowledge",
+        merchant_id="mcht_life_01",
+        customer_id="cust_life_01",
+        amount=2500.0,
+        payment_method=PaymentMethod.CARD.value,
+        status=TransactionStatus.FAILED.value,
+        failure_category=FailureCategory.TEMPORARY.value,
+        failure_code="OTP_TIMEOUT",
+        failure_reason="Customer OTP expired",
+    )
+    lifecycle_db.add(txn)
+    lifecycle_db.commit()
+
+    case = recovery_lifecycle_service.detect_revenue_at_risk(db=lifecycle_db, transaction=txn)
+    diagnosis = diagnosis_service.diagnose_case(db=lifecycle_db, case_id=case.id, txn=txn)
+    decision = recovery_lifecycle_service.decide_recovery_strategy(db=lifecycle_db, case_id=case.id)
+    payload = json.loads(decision.execution_payload_json)
+
+    assert diagnosis.retrieved_knowledge[0].scenario == "authentication_failure"
+    assert payload["knowledge_scenarios"][0] == "authentication_failure"
+    assert payload["deterministic_action"] == ActionType.SMART_RETRY.value
+    assert decision.recommended_action == ActionType.PAYMENT_LINK.value
+    assert payload["knowledge_influenced_action"] is True
+    assert decision.policy_approved is True
+
+
+def test_policy_still_vetoes_knowledge_aligned_high_value_retry(lifecycle_db):
+    """Knowledge-supported smart retry is still rejected by the Policy Engine."""
+    txn = Transaction(
+        id="txn_decision_policy_veto",
+        merchant_id="mcht_life_01",
+        customer_id="cust_life_01",
+        amount=75000.0,
+        payment_method=PaymentMethod.UPI.value,
+        status=TransactionStatus.FAILED.value,
+        failure_category=FailureCategory.TEMPORARY.value,
+        failure_code="BAD_REQUEST_GATEWAY_TIMEOUT",
+        failure_reason="Gateway timeout",
+    )
+    lifecycle_db.add(txn)
+    lifecycle_db.commit()
+
+    case = recovery_lifecycle_service.detect_revenue_at_risk(db=lifecycle_db, transaction=txn)
+    decision = recovery_lifecycle_service.decide_recovery_strategy(db=lifecycle_db, case_id=case.id)
+    payload = json.loads(decision.execution_payload_json)
+
+    assert payload["knowledge_scenarios"][0] == "gateway_timeout"
+    assert decision.recommended_action == ActionType.SMART_RETRY.value
+    assert decision.policy_approved is False
+    assert "exceeds automatic retry threshold" in (decision.policy_rejection_reason or "")
 
 
 def test_full_autonomous_6_stage_workflow(lifecycle_db):
