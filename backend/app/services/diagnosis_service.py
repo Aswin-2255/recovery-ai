@@ -11,6 +11,7 @@ from sqlalchemy import func
 
 from app.models.enums import FailureCategory, PaymentMethod, TransactionStatus
 from app.models.transaction import Transaction
+from app.services.recovery_knowledge_service import RecoveryKnowledgeItem, recovery_knowledge_service
 from app.services.synthetic_generator import FAILURE_CATALOG
 
 
@@ -24,6 +25,7 @@ class DiagnosisResult:
     systemic_degradation_detected: bool
     incident_method: Optional[str]
     detailed_metrics: Dict[str, Any]
+    retrieved_knowledge: List[RecoveryKnowledgeItem]
 
 
 class DiagnosisService:
@@ -86,6 +88,16 @@ class DiagnosisService:
         else:
             root_cause = f"Payment failure with code '{f_code}' under {method.upper()} instrument."
 
+        # Retrieval is diagnostic context only. It does not affect the
+        # deterministic classification, root-cause summary, or any lifecycle action.
+        retrieved_knowledge = recovery_knowledge_service.retrieve(
+            failure_code=txn.failure_code,
+            payment_method=method,
+            amount=txn.amount,
+            retry_count=txn.retry_count,
+            diagnosis=root_cause,
+        )
+
         return DiagnosisResult(
             case_id=case_id,
             root_cause_summary=root_cause,
@@ -101,6 +113,7 @@ class DiagnosisService:
                 "retry_count": txn.retry_count,
                 "is_synthetic": txn.is_synthetic,
             },
+            retrieved_knowledge=retrieved_knowledge,
         )
 
 
