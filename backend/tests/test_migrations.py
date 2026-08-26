@@ -23,6 +23,7 @@ def test_alembic_upgrade_head_memory(tmp_path):
     db_file = tmp_path / "test_migration.db"
     sqlite_url = f"sqlite:///{db_file}"
 
+    alembic_cfg.set_main_option("script_location", str(BASE_DIR / "alembic"))
     alembic_cfg.set_main_option("sqlalchemy.url", sqlite_url)
 
     # Run upgrade head

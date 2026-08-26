@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "recoverai-backend"
+version = "0.1.0"
+description = "Autonomous, policy-bounded revenue recovery platform for Razorpay Buildathon"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "fastapi>=0.111.0,<0.116.0",
+    "uvicorn[standard]>=0.30.0,<0.35.0",
+    "pydantic>=2.7.0,<3.0.0",
+    "pydantic-settings>=2.2.0,<3.0.0",
+    "sqlalchemy>=2.0.30,<2.1.0",
+    "psycopg2-binary>=2.9.9",
+    "alembic>=1.13.1,<1.15.0",
+    "python-dotenv>=1.0.1",
+    "pandas>=2.2.0,<3.0.0",
+    "numpy>=1.26.0,<2.1.0",
+    "scikit-learn>=1.5.0,<1.6.0",
+    "joblib>=1.4.0,<1.5.0",
+    "httpx>=0.27.0,<0.29.0",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=8.2.0,<9.0.0",
+    "pytest-asyncio>=0.23.7",
+]
+dev = [
+    "pytest>=8.2.0,<9.0.0",
+    "pytest-asyncio>=0.23.7",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["app*"]

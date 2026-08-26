@@ -1,5 +1,6 @@
 """System health and diagnostic endpoints."""
 from datetime import datetime, timezone
+from typing import Optional
 from fastapi import APIRouter
 from pydantic import BaseModel, Field
 from app.core.config import settings
@@ -12,7 +13,7 @@ class DatabaseHealth(BaseModel):
     status: str
     dialect: str = "unknown"
     mode: str = "unknown"
-    error: str | None = None
+    error: Optional[str] = None
 
 
 class HealthResponse(BaseModel):

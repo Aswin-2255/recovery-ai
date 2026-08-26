@@ -4,8 +4,15 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.api.routes.health import router as health_router
+from app.api.routes.transactions import router as transactions_router
+from app.api.routes.recovery_cases import router as recovery_cases_router
+from app.api.routes.policies import router as policies_router
+from app.api.routes.analytics import router as analytics_router
+from app.api.routes.audit_logs import router as audit_logs_router
+from app.api.routes.webhooks import router as webhooks_router
 from app.core.config import settings
-from app.core.database import check_db_connection
+from app.core.database import check_db_connection, Base, engine
+import app.models  # Ensure all model tables are registered with Base metadata
 
 # Configure logging
 logging.basicConfig(
@@ -19,6 +26,7 @@ logger = logging.getLogger("recoverai")
 async def lifespan(app: FastAPI):
     """Application startup and shutdown events."""
     logger.info(f"Starting {settings.APP_NAME} v{settings.VERSION} [{settings.APP_ENV}]")
+    Base.metadata.create_all(bind=engine)
     db_status = check_db_connection()
     logger.info(f"Database status: {db_status}")
     yield
@@ -45,6 +53,12 @@ app.add_middleware(
 
 # Include Routers
 app.include_router(health_router)
+app.include_router(transactions_router)
+app.include_router(recovery_cases_router)
+app.include_router(policies_router)
+app.include_router(analytics_router)
+app.include_router(audit_logs_router)
+app.include_router(webhooks_router)
 
 
 @app.get("/", summary="API Root")

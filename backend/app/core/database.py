@@ -1,21 +1,41 @@
 """Database engine, session management, and connection utilities."""
 import logging
+from pathlib import Path
 from typing import Generator
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import declarative_base, sessionmaker, Session
-from app.core.config import settings
+from app.core.config import settings, BASE_DIR
 
 logger = logging.getLogger(__name__)
 
 # Base class for SQLAlchemy ORM models
 Base = declarative_base()
 
+def _normalize_sqlite_url(db_url: str) -> str:
+    """Ensure relative SQLite file paths resolve consistently to BASE_DIR."""
+    if not db_url.startswith("sqlite:///"):
+        return db_url
+    path_part = db_url[len("sqlite:///"):]
+    if path_part in (":memory:", ""):
+        return db_url
+    p = Path(path_part)
+    if not p.is_absolute():
+        resolved_path = (BASE_DIR / p).resolve()
+        return f"sqlite:///{resolved_path}"
+    return db_url
+
+
 def _create_database_engine():
     """Create SQLAlchemy engine with automatic fallback for seamless local developer onboarding."""
-    db_url = settings.DATABASE_URL
-    is_sqlite = db_url.startswith("sqlite")
+    raw_db_url = settings.DATABASE_URL
+    is_sqlite = raw_db_url.startswith("sqlite")
+    db_url = _normalize_sqlite_url(raw_db_url) if is_sqlite else raw_db_url
     
     connect_args = {"check_same_thread": False} if is_sqlite else {}
+    extra_engine_args = {}
+    if is_sqlite and (":memory:" in db_url or db_url == "sqlite://"):
+        from sqlalchemy.pool import StaticPool
+        extra_engine_args["poolclass"] = StaticPool
     
     try:
         engine = create_engine(
@@ -23,6 +43,7 @@ def _create_database_engine():
             connect_args=connect_args,
             pool_pre_ping=True,
             echo=False,
+            **extra_engine_args,
         )
         # Test connection immediately
         with engine.connect() as conn:
@@ -35,7 +56,8 @@ def _create_database_engine():
                 f"Could not connect to primary PostgreSQL database ({e}). "
                 f"Falling back to local SQLite database for development."
             )
-            fallback_url = "sqlite:///./recoverai_local.db"
+            fallback_db_path = BASE_DIR / "recoverai_local.db"
+            fallback_url = f"sqlite:///{fallback_db_path.resolve()}"
             fallback_engine = create_engine(
                 fallback_url,
                 connect_args={"check_same_thread": False},
@@ -54,6 +76,9 @@ def get_db() -> Generator[Session, None, None]:
     db = SessionLocal()
     try:
         yield db
+    except Exception:
+        db.rollback()
+        raise
     finally:
         db.close()
 
