@@ -3,7 +3,13 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-from app.schemas.analytics import OverviewMetrics, BreakdownMetrics, IncidentStatusRead
+from app.schemas.analytics import (
+    OverviewMetrics,
+    BreakdownMetrics,
+    IncidentStatusRead,
+    BatchEvaluationRequest,
+    BatchEvaluationResponse,
+)
 from app.services.analytics_service import analytics_service
 
 router = APIRouter(prefix="/api/analytics", tags=["Analytics"])
@@ -25,3 +31,17 @@ def get_breakdown_metrics(db: Session = Depends(get_db)):
 def get_incident_status(db: Session = Depends(get_db)):
     """Retrieve current gateway degradation and systemic failure incident telemetry."""
     return analytics_service.get_incident_status(db=db)
+
+
+@router.post("/evaluate-batch", response_model=BatchEvaluationResponse, summary="Execute Batch Revenue Recovery Evaluation")
+@router.post("/batch-evaluate", response_model=BatchEvaluationResponse, include_in_schema=False)
+def evaluate_batch(
+    payload: BatchEvaluationRequest = BatchEvaluationRequest(),
+    db: Session = Depends(get_db),
+):
+    """
+    Process a reproducible batch of synthetic failed transactions through the
+    existing 6-stage recovery lifecycle and produce measurable financial recovery metrics.
+    """
+    return analytics_service.evaluate_batch(db=db, request=payload)
+
