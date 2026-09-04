@@ -352,8 +352,8 @@ class SyntheticPaymentGenerator:
                 f_code = f_def.code
                 f_reason = f_def.reason
 
-            txn_id = f"txn_{i+1:05d}_{self.rng.randint(1000, 9999)}"
-            order_id = f"order_{i+1:05d}"
+            txn_id = f"txn_{self.seed}_{i+1:05d}_{self.rng.randint(1000, 9999)}"
+            order_id = f"order_{self.seed}_{i+1:05d}"
 
             txn = Transaction(
                 id=txn_id,
@@ -404,7 +404,7 @@ class SyntheticPaymentGenerator:
                 else:
                     priority = CasePriority.LOW.value
 
-                case_id = f"case_{i+1:05d}_{txn_id[4:9]}"
+                case_id = f"case_{self.seed}_{i+1:05d}_{txn_id.split('_')[-1]}"
                 recovery_case = RecoveryCase(
                     id=case_id,
                     transaction_id=txn.id,
@@ -423,7 +423,7 @@ class SyntheticPaymentGenerator:
 
                 # Initial AuditLog for detection
                 audit = AuditLog(
-                    id=f"aud_{len(audit_logs)+1:06d}",
+                    id=f"aud_{self.seed}_{len(audit_logs)+1:06d}",
                     entity_type="recovery_case",
                     entity_id=case_id,
                     actor=ActorType.SYSTEM.value,

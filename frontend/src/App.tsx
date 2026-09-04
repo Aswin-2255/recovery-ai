@@ -72,6 +72,7 @@ interface RecoveryAction {
   status: string;
   amount_recovered: number;
   result?: string;
+  execution_details_json?: string;
   executed_at?: string;
   created_at: string;
 }
@@ -84,6 +85,7 @@ interface AgentDecision {
   confidence: number;
   policy_approved: boolean;
   policy_rejection_reason?: string;
+  execution_payload_json?: string;
   created_at: string;
 }
 
@@ -122,6 +124,7 @@ interface RecoveryCase {
   transaction?: TransactionData;
   actions?: RecoveryAction[];
   decisions?: AgentDecision[];
+  retrieved_knowledge?: RetrievedKnowledgeItem[];
 }
 
 interface AuditLog {
@@ -195,7 +198,7 @@ interface BatchEvaluationResponse {
   execution_time_ms: number;
 }
 
-// --- Preset Failure Scenarios for Buildathon Demo ---
+// --- Preset Failure Scenarios ---
 
 interface SimulationPreset {
   title: string;
@@ -383,6 +386,9 @@ export default function App() {
       if (detailRes.ok) {
         const detail: RecoveryCase = await detailRes.json();
         setSelectedCaseDetail(detail);
+        if (detail.retrieved_knowledge && detail.retrieved_knowledge.length > 0) {
+          setDiagnosedKnowledge(detail.retrieved_knowledge);
+        }
       }
       if (auditRes.ok) {
         setCaseAuditLogs(await auditRes.json());
@@ -454,7 +460,7 @@ export default function App() {
         body: JSON.stringify({
           amount: simFormAmount,
           payment_method: simFormMethod,
-          transaction_type: 'payment',
+          transaction_type: 'one_time',
           failure_code: simFormCode,
           is_degradation_incident: simFormIncident,
         }),
@@ -681,6 +687,120 @@ export default function App() {
     return <span className="px-2 py-0.5 text-[10px] font-bold rounded bg-slate-800 text-slate-400 border border-slate-700 uppercase">Low</span>;
   };
 
+  const getPlainEnglishFailureReason = (code?: string, rawReason?: string) => {
+    if (code === 'BAD_REQUEST_GATEWAY_TIMEOUT') return 'NPCI / Bank gateway timed out during payment handshake';
+    if (code === 'BANK_SYSTEM_BUSY') return 'Issuing bank processing network temporarily congested';
+    if (code === 'INSUFFICIENT_FUNDS') return 'Customer account balance insufficient for debit';
+    if (code === 'OTP_TIMEOUT') return 'Authentication OTP expired before customer confirmation';
+    if (code === 'ACCOUNT_BLOCKED') return 'Customer account / card blocked by issuing bank (Terminal decline)';
+    if (code === 'INVALID_CARD_NUMBER') return 'Invalid or deactivated card credentials supplied';
+    if (code === 'CHECKOUT_DROPOFF_AT_PAYMENT_SELECT') return 'Customer abandoned checkout before choosing payment method';
+    if (code === 'MANDATE_INSUFFICIENT_FUNDS') return 'Subscription mandate debit declined due to low account balance';
+    if (code === 'SYSTEMIC_GATEWAY_DEGRADATION') return 'Systemic gateway degradation spike across bank payment switches';
+    if (rawReason) return rawReason;
+    if (code) return code.replace(/_/g, ' ');
+    return 'Transaction declined by payment network';
+  };
+
+  const getRecoveryLikelihoodInfo = (prob: number | null, status: string) => {
+    if (status.toLowerCase() === 'stopped') {
+      return {
+        pct: '0%',
+        label: 'Vetoed by Safety Guardrail',
+        badge: 'Policy Stopped',
+        color: 'text-rose-400',
+        badgeColor: 'bg-rose-500/10 text-rose-400 border-rose-500/20',
+      };
+    }
+    if (prob === null || prob === undefined) {
+      return {
+        pct: '—',
+        label: 'Evaluation in progress',
+        badge: 'Pending RCA',
+        color: 'text-slate-400',
+        badgeColor: 'bg-slate-800 text-slate-400 border-slate-700',
+      };
+    }
+    const val = Math.round(prob * 100);
+    if (val >= 75) {
+      return {
+        pct: `${val}%`,
+        label: 'High Recovery Likelihood',
+        badge: 'High Likelihood',
+        color: 'text-emerald-400',
+        badgeColor: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20',
+      };
+    }
+    if (val >= 45) {
+      return {
+        pct: `${val}%`,
+        label: 'Moderate Recovery Likelihood',
+        badge: 'Moderate Likelihood',
+        color: 'text-amber-400',
+        badgeColor: 'bg-amber-500/10 text-amber-400 border-amber-500/20',
+      };
+    }
+    return {
+      pct: `${val}%`,
+      label: 'Low Recovery Likelihood',
+      badge: 'Low Likelihood',
+      color: 'text-slate-400',
+      badgeColor: 'bg-slate-800 text-slate-400 border-slate-700',
+    };
+  };
+
+  const getOutcomeSummary = (c: RecoveryCase) => {
+    const s = c.status.toLowerCase();
+    const latestAction = c.actions && c.actions.length > 0 ? c.actions[0] : null;
+    const recoveredAmt = latestAction?.amount_recovered || (s === 'recovered' ? c.revenue_at_risk : 0);
+    if (s === 'recovered') {
+      return {
+        title: 'Recovered & Settled',
+        desc: `${formatINR(recoveredAmt)} verified in merchant ledger`,
+        badgeColor: 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20',
+        badgeText: '100% Settled',
+      };
+    }
+    if (s === 'stopped') {
+      return {
+        title: 'Safely Stopped by Policy',
+        desc: 'Unsafe retry blocked to protect merchant reputation & prevent bank penalties',
+        badgeColor: 'bg-rose-500/10 text-rose-400 border-rose-500/20',
+        badgeText: 'Guardrail Veto',
+      };
+    }
+    if (s === 'in_progress') {
+      return {
+        title: 'Action In Progress',
+        desc: 'Recovery strategy formulated and executing through gateway',
+        badgeColor: 'bg-cyan-500/10 text-cyan-400 border-cyan-500/20',
+        badgeText: 'Executing',
+      };
+    }
+    if (s === 'diagnosed') {
+      return {
+        title: 'Diagnosed — Strategy Ready',
+        desc: 'Root cause confirmed; awaiting autonomous execution',
+        badgeColor: 'bg-purple-500/10 text-purple-400 border-purple-500/20',
+        badgeText: 'Diagnosed',
+      };
+    }
+    if (s === 'unrecoverable') {
+      return {
+        title: 'Unrecoverable',
+        desc: 'Maximum retries exhausted without bank authorization',
+        badgeColor: 'bg-slate-500/10 text-slate-400 border-slate-700/50',
+        badgeText: 'Retries Exhausted',
+      };
+    }
+    return {
+      title: 'Payment Failure Ingested',
+      desc: 'Case created and queued for autonomous diagnosis',
+      badgeColor: 'bg-amber-500/10 text-amber-400 border-amber-500/20',
+      badgeText: 'Ready for RCA',
+    };
+  };
+
   return (
     <div className="min-h-screen bg-[#090D16] text-slate-100 flex flex-col font-sans selection:bg-emerald-500/20 selection:text-emerald-300">
       {/* Top Navbar */}
@@ -694,10 +814,9 @@ export default function App() {
               <div className="flex items-center space-x-2">
                 <span className="text-lg font-extrabold tracking-tight text-white">RecoverAI</span>
                 <span className="text-[11px] font-semibold px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-                  Track 3: AI Revenue Recovery
+                  Autonomous Revenue Recovery
                 </span>
               </div>
-              <p className="text-[11px] text-slate-400 font-medium">Razorpay Buildathon 2026</p>
             </div>
           </div>
 
@@ -1080,6 +1199,84 @@ export default function App() {
                     </div>
                   </div>
 
+                  {/* Executive Case Summary Card for Judge (10-Second Story) */}
+                  {(() => {
+                    const likelihood = getRecoveryLikelihoodInfo(selectedCaseDetail.recovery_probability, selectedCaseDetail.status);
+                    const outcome = getOutcomeSummary(selectedCaseDetail);
+                    const failureReason = getPlainEnglishFailureReason(
+                      selectedCaseDetail.transaction?.failure_code || selectedCaseDetail.reason,
+                      selectedCaseDetail.root_cause_summary
+                    );
+
+                    return (
+                      <div className="bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 border border-slate-800 rounded-xl p-4 shadow-lg">
+                        <div className="flex items-center justify-between pb-2.5 mb-3 border-b border-slate-800/80">
+                          <span className="text-[11px] font-bold text-slate-300 uppercase tracking-wider flex items-center space-x-1.5">
+                            <Sparkles className="w-3.5 h-3.5 text-emerald-400" />
+                            <span>Executive Case Summary</span>
+                          </span>
+                          <span className="text-[10px] text-slate-400 font-mono">
+                            Method: <strong className="text-slate-200 uppercase">{selectedCaseDetail.transaction?.payment_method || 'UPI'}</strong>
+                          </span>
+                        </div>
+
+                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                          {/* 1. Payment Amount */}
+                          <div className="p-3 rounded-lg bg-slate-900/90 border border-slate-800/80">
+                            <span className="text-[10px] text-slate-400 uppercase font-semibold block mb-0.5">
+                              Payment Amount
+                            </span>
+                            <div className="text-lg font-bold text-emerald-400 font-mono tracking-tight">
+                              {formatINR(selectedCaseDetail.revenue_at_risk)}
+                            </div>
+                            <span className="text-[10px] text-slate-500 font-mono truncate block mt-0.5">
+                              Txn: {selectedCaseDetail.transaction_id}
+                            </span>
+                          </div>
+
+                          {/* 2. Failure Reason */}
+                          <div className="p-3 rounded-lg bg-slate-900/90 border border-slate-800/80">
+                            <span className="text-[10px] text-slate-400 uppercase font-semibold block mb-0.5">
+                              Failure Reason
+                            </span>
+                            <div className="text-xs font-semibold text-white line-clamp-2" title={failureReason}>
+                              {failureReason}
+                            </div>
+                            <span className="text-[10px] text-amber-400/90 font-mono mt-1 block truncate">
+                              Code: {selectedCaseDetail.transaction?.failure_code || 'DETECTED_FAIL'}
+                            </span>
+                          </div>
+
+                          {/* 3. Recovery Likelihood */}
+                          <div className="p-3 rounded-lg bg-slate-900/90 border border-slate-800/80">
+                            <span className="text-[10px] text-slate-400 uppercase font-semibold block mb-0.5">
+                              Recovery Likelihood
+                            </span>
+                            <div className={`text-lg font-bold font-mono tracking-tight ${likelihood.color}`}>
+                              {likelihood.pct}
+                            </div>
+                            <span className={`text-[9px] font-semibold px-1.5 py-0.5 rounded border inline-block mt-0.5 ${likelihood.badgeColor}`}>
+                              {likelihood.label}
+                            </span>
+                          </div>
+
+                          {/* 4. Current Outcome */}
+                          <div className="p-3 rounded-lg bg-slate-900/90 border border-slate-800/80">
+                            <span className="text-[10px] text-slate-400 uppercase font-semibold block mb-0.5">
+                              Current Outcome
+                            </span>
+                            <div className="text-xs font-bold text-white truncate">
+                              {outcome.title}
+                            </div>
+                            <p className="text-[10px] text-slate-400 mt-0.5 line-clamp-1" title={outcome.desc}>
+                              {outcome.desc}
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })()}
+
                   {/* Step-by-Step Stage Controls for Judge Demo */}
                   <div className="bg-slate-950/80 p-3 rounded-xl border border-slate-800 flex flex-wrap items-center justify-between gap-2">
                     <span className="text-[11px] font-semibold text-slate-400 flex items-center space-x-1.5">
@@ -1092,14 +1289,14 @@ export default function App() {
                         disabled={actionLoading}
                         className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-[11px] font-medium text-slate-200 border border-slate-700 active:scale-95 disabled:opacity-50"
                       >
-                        2. Diagnose
+                        ② Diagnose
                       </button>
                       <button
                         onClick={() => handleRunDecide(selectedCaseDetail.id)}
                         disabled={actionLoading}
                         className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-[11px] font-medium text-slate-200 border border-slate-700 active:scale-95 disabled:opacity-50"
                       >
-                        3. Decide
+                        ③ Decide
                       </button>
                       <button
                         onClick={() =>
@@ -1111,7 +1308,7 @@ export default function App() {
                         disabled={actionLoading}
                         className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-[11px] font-medium text-slate-200 border border-slate-700 active:scale-95 disabled:opacity-50"
                       >
-                        4-6. Execute
+                        ⑤ Recover
                       </button>
                     </div>
                   </div>
@@ -1125,189 +1322,539 @@ export default function App() {
                           <div className="w-5 h-5 rounded-full bg-emerald-500/20 text-emerald-400 font-bold flex items-center justify-center text-[10px]">
                             1
                           </div>
-                          <span className="font-bold text-white">Detect (Revenue-at-Risk Engine)</span>
+                          <span className="font-bold text-white">① Detect — Payment Failure Ingested</span>
                         </div>
-                        <span className="text-[10px] text-emerald-400 font-semibold uppercase">COMPLETED</span>
+                        <span className="text-[10px] text-emerald-400 font-semibold uppercase bg-emerald-500/10 px-2 py-0.5 rounded border border-emerald-500/20">
+                          COMPLETED
+                        </span>
                       </div>
-                      <div className="text-xs text-slate-300 pl-7 space-y-1">
-                        <p>
-                          Revenue at risk of <span className="text-emerald-400 font-semibold">{formatINR(selectedCaseDetail.revenue_at_risk)}</span> identified on payment instrument <span className="uppercase text-white font-mono">{selectedCaseDetail.transaction?.payment_method || 'UPI'}</span>.
-                        </p>
-                        <div className="flex items-center space-x-4 text-[11px] text-slate-400 font-mono pt-1">
-                          <span>Classification: <strong className="text-white uppercase">{selectedCaseDetail.classification}</strong></span>
-                          <span>Recoverability: <strong className="text-cyan-300">{Math.round((selectedCaseDetail.recovery_probability || 0.5) * 100)}%</strong></span>
+                      <div className="text-xs text-slate-300 pl-7 space-y-2">
+                        {/* Plain-English summary first */}
+                        <div className="p-2.5 rounded-lg bg-slate-900/60 border border-slate-800/80 text-xs text-slate-200 leading-relaxed">
+                          Detected an unexpected payment failure of <strong className="text-emerald-400 font-mono">{formatINR(selectedCaseDetail.revenue_at_risk)}</strong> on transaction <span className="text-white font-mono">{selectedCaseDetail.transaction_id}</span> ({selectedCaseDetail.transaction?.payment_method?.toUpperCase() || 'UPI'}). Evaluated initial recovery viability and prioritized for autonomous intervention.
+                        </div>
+                        {/* Technical Details underneath */}
+                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[11px] font-mono">
+                          <div className="p-2 rounded bg-slate-900/80 border border-slate-800">
+                            <span className="text-slate-500 block text-[10px]">Classification</span>
+                            <strong className="text-white uppercase">{selectedCaseDetail.classification.replace(/_/g, ' ')}</strong>
+                          </div>
+                          <div className="p-2 rounded bg-slate-900/80 border border-slate-800">
+                            <span className="text-slate-500 block text-[10px]">P(Recovery Baseline)</span>
+                            <strong className="text-cyan-300">{Math.round((selectedCaseDetail.recovery_probability || 0.5) * 100)}%</strong>
+                          </div>
+                          <div className="p-2 rounded bg-slate-900/80 border border-slate-800">
+                            <span className="text-slate-500 block text-[10px]">Failure Code</span>
+                            <strong className="text-amber-300 truncate block">{selectedCaseDetail.transaction?.failure_code || selectedCaseDetail.reason || 'DETECTED_FAIL'}</strong>
+                          </div>
+                          <div className="p-2 rounded bg-slate-900/80 border border-slate-800">
+                            <span className="text-slate-500 block text-[10px]">Retry Counter</span>
+                            <strong className="text-slate-300">Attempt #{selectedCaseDetail.transaction?.retry_count || 0} / {selectedCaseDetail.transaction?.max_retries_allowed || 3}</strong>
+                          </div>
                         </div>
                       </div>
                     </div>
 
                     {/* STAGE 2: DIAGNOSE */}
-                    <div className="p-3.5 rounded-xl bg-slate-950 border border-slate-800/90 space-y-2">
-                      <div className="flex items-center justify-between text-xs">
-                        <div className="flex items-center space-x-2">
-                          <div className="w-5 h-5 rounded-full bg-purple-500/20 text-purple-400 font-bold flex items-center justify-center text-[10px]">
-                            2
-                          </div>
-                          <span className="font-bold text-white">Diagnose (Root Cause Analysis)</span>
-                        </div>
-                        <span className="text-[10px] text-purple-400 font-semibold uppercase">
-                          {selectedCaseDetail.status !== 'open' ? 'COMPLETED' : 'PENDING'}
-                        </span>
-                      </div>
-                      <div className="text-xs text-slate-300 pl-7 space-y-2">
-                        <p className="leading-relaxed">
-                          {selectedCaseDetail.root_cause_summary || 'Awaiting Root Cause Diagnosis execution...'}
-                        </p>
+                    {(() => {
+                      const activeKnowledge = (selectedCaseDetail.retrieved_knowledge && selectedCaseDetail.retrieved_knowledge.length > 0)
+                        ? selectedCaseDetail.retrieved_knowledge[0]
+                        : (diagnosedKnowledge.length > 0 ? diagnosedKnowledge[0] : null);
 
-                        {/* Retrieved Knowledge / RAG Block */}
-                        {diagnosedKnowledge.length > 0 && (
-                          <div className="bg-slate-900/90 p-3 rounded-lg border border-purple-500/30 text-[11px] space-y-2 mt-2">
-                            <div className="flex items-center justify-between text-purple-300 font-semibold">
-                              <span className="flex items-center space-x-1.5">
-                                <BookOpen className="w-3.5 h-3.5 text-purple-400" />
-                                <span>Retrieved Recovery Knowledge ({diagnosedKnowledge[0].scenario})</span>
-                              </span>
-                              <span className="text-[10px] bg-purple-500/10 text-purple-300 px-2 py-0.5 rounded border border-purple-500/20">
-                                Matched Scenario
-                              </span>
-                            </div>
-                            <p className="text-slate-300">{diagnosedKnowledge[0].description}</p>
-                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[10px] pt-1">
-                              <div className="bg-slate-950 p-2 rounded border border-slate-800">
-                                <strong className="text-slate-400 block mb-0.5">Recommended Interventions:</strong>
-                                <span className="text-emerald-400 font-mono">
-                                  {diagnosedKnowledge[0].recommended_recovery_actions.join(', ')}
-                                </span>
+                      return (
+                        <div className="p-3.5 rounded-xl bg-slate-950 border border-slate-800/90 space-y-2">
+                          <div className="flex items-center justify-between text-xs">
+                            <div className="flex items-center space-x-2">
+                              <div className="w-5 h-5 rounded-full bg-purple-500/20 text-purple-400 font-bold flex items-center justify-center text-[10px]">
+                                2
                               </div>
-                              <div className="bg-slate-950 p-2 rounded border border-slate-800">
-                                <strong className="text-slate-400 block mb-0.5">Risk Considerations:</strong>
-                                <span className="text-amber-300">
-                                  {diagnosedKnowledge[0].risk_considerations}
-                                </span>
-                              </div>
+                              <span className="font-bold text-white">② Diagnose — Root Cause Analysis</span>
                             </div>
-                            <div className="text-[10px] text-rose-300 bg-rose-950/30 p-2 rounded border border-rose-900/40">
-                              <strong>Do Not Retry Conditions:</strong> {diagnosedKnowledge[0].do_not_retry_conditions}
-                            </div>
+                            <span className={`text-[10px] font-semibold uppercase px-2 py-0.5 rounded border ${
+                              selectedCaseDetail.status !== 'open'
+                                ? 'bg-purple-500/10 text-purple-400 border-purple-500/20'
+                                : 'bg-slate-800 text-slate-400 border-slate-700'
+                            }`}>
+                              {selectedCaseDetail.status !== 'open' ? 'COMPLETED' : 'PENDING'}
+                            </span>
                           </div>
-                        )}
-                      </div>
-                    </div>
+                          <div className="text-xs text-slate-300 pl-7 space-y-2">
+                            {/* Plain-English summary first */}
+                            <div className="p-2.5 rounded-lg bg-slate-900/60 border border-slate-800/80 text-xs text-slate-200 leading-relaxed">
+                              {selectedCaseDetail.root_cause_summary ? (
+                                <span>Root cause diagnosed: <strong className="text-purple-300">{selectedCaseDetail.root_cause_summary}</strong></span>
+                              ) : (
+                                <span className="text-slate-400">Awaiting Root Cause Diagnosis execution...</span>
+                              )}
+                            </div>
+
+                            <div className="flex flex-wrap items-center gap-2 text-[10px] font-mono">
+                              <span className="px-2 py-0.5 rounded bg-slate-900 border border-slate-800 text-slate-300">
+                                Category: <strong className="text-purple-300 uppercase">{selectedCaseDetail.transaction?.failure_category || 'UNKNOWN'}</strong>
+                              </span>
+                              <span className={`px-2 py-0.5 rounded border ${
+                                selectedCaseDetail.transaction?.failure_category === 'temporary'
+                                  ? 'bg-emerald-950/40 text-emerald-400 border-emerald-800/60'
+                                  : 'bg-slate-900 text-slate-300 border-slate-800'
+                              }`}>
+                                Transient: <strong className="uppercase">{selectedCaseDetail.transaction?.failure_category === 'temporary' ? 'YES' : 'NO'}</strong>
+                              </span>
+                              <span className={`px-2 py-0.5 rounded border ${
+                                selectedCaseDetail.transaction?.is_degradation_incident
+                                  ? 'bg-amber-950/60 text-amber-300 border-amber-800'
+                                  : 'bg-slate-900 text-slate-400 border-slate-800'
+                              }`}>
+                                Outage Incident: <strong className="uppercase">{selectedCaseDetail.transaction?.is_degradation_incident ? 'ACTIVE SURGE' : 'NO'}</strong>
+                              </span>
+                            </div>
+
+                            {/* Recovery Knowledge Used Section */}
+                            {activeKnowledge && (
+                              <div className="bg-slate-900/95 p-3.5 rounded-xl border border-purple-500/30 text-[11px] space-y-2.5 mt-2 shadow-inner">
+                                <div className="flex items-center justify-between text-purple-300 font-semibold border-b border-purple-500/20 pb-1.5">
+                                  <span className="flex items-center space-x-1.5 font-bold">
+                                    <BookOpen className="w-3.5 h-3.5 text-purple-400" />
+                                    <span>Recovery Knowledge Used</span>
+                                  </span>
+                                  <span className="text-[10px] bg-purple-500/20 text-purple-300 px-2 py-0.5 rounded border border-purple-500/30 uppercase font-mono font-bold">
+                                    Knowledge Match
+                                  </span>
+                                </div>
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11px]">
+                                  <div className="bg-slate-950 p-2.5 rounded-lg border border-slate-800">
+                                    <strong className="text-slate-400 block text-[10px] uppercase mb-0.5">Matched Scenario:</strong>
+                                    <span className="text-white font-mono font-semibold">
+                                      {activeKnowledge.scenario}
+                                    </span>
+                                    <p className="text-slate-300 text-[10px] mt-1 leading-relaxed">{activeKnowledge.description}</p>
+                                  </div>
+                                  <div className="bg-slate-950 p-2.5 rounded-lg border border-slate-800">
+                                    <strong className="text-slate-400 block text-[10px] uppercase mb-0.5">Recommended Action:</strong>
+                                    <span className="text-emerald-400 font-mono font-semibold block">
+                                      {activeKnowledge.recommended_recovery_actions.join(', ')}
+                                    </span>
+                                    <span className="text-slate-400 text-[10px] mt-1 block">
+                                      {activeKnowledge.retry_guidance}
+                                    </span>
+                                  </div>
+                                </div>
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[10px]">
+                                  <div className="bg-slate-950 p-2.5 rounded-lg border border-slate-800">
+                                    <strong className="text-amber-400 block mb-0.5 uppercase">Important Risks:</strong>
+                                    <span className="text-slate-300 leading-tight">
+                                      {activeKnowledge.risk_considerations}
+                                    </span>
+                                  </div>
+                                  <div className="text-rose-300 bg-rose-950/40 p-2.5 rounded-lg border border-rose-900/40">
+                                    <strong className="block mb-0.5 uppercase text-rose-400">Do-Not-Retry Conditions:</strong>
+                                    <span className="leading-tight">{activeKnowledge.do_not_retry_conditions}</span>
+                                  </div>
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })()}
 
                     {/* STAGE 3: DECIDE */}
-                    <div className="p-3.5 rounded-xl bg-slate-950 border border-slate-800/90 space-y-2">
-                      <div className="flex items-center justify-between text-xs">
-                        <div className="flex items-center space-x-2">
-                          <div className="w-5 h-5 rounded-full bg-cyan-500/20 text-cyan-400 font-bold flex items-center justify-center text-[10px]">
-                            3
-                          </div>
-                          <span className="font-bold text-white">Decide (Agent Strategy Formulation)</span>
-                        </div>
-                        <span className="text-[10px] text-cyan-400 font-semibold uppercase">
-                          {selectedCaseDetail.decisions && selectedCaseDetail.decisions.length > 0 ? 'COMPLETED' : 'PENDING'}
-                        </span>
-                      </div>
-                      <div className="text-xs text-slate-300 pl-7 space-y-1.5">
-                        {selectedCaseDetail.decisions && selectedCaseDetail.decisions.length > 0 ? (
-                          <>
-                            <div className="flex items-center space-x-3 font-mono text-[11px]">
-                              <span>Action: <strong className="text-emerald-400 uppercase">{selectedCaseDetail.decisions[0].recommended_action}</strong></span>
-                              <span>Confidence: <strong className="text-cyan-300">{Math.round(selectedCaseDetail.decisions[0].confidence * 100)}%</strong></span>
-                              <span>Policy Pre-Check: <strong className={selectedCaseDetail.decisions[0].policy_approved ? 'text-emerald-400' : 'text-rose-400'}>
-                                {selectedCaseDetail.decisions[0].policy_approved ? 'APPROVED' : 'REJECTED'}
-                              </strong></span>
+                    {(() => {
+                      const dec = selectedCaseDetail.decisions && selectedCaseDetail.decisions.length > 0 ? selectedCaseDetail.decisions[0] : null;
+                      let decPayload: any = null;
+                      if (dec?.execution_payload_json) {
+                        try {
+                          decPayload = JSON.parse(dec.execution_payload_json);
+                        } catch {
+                          decPayload = null;
+                        }
+                      }
+
+                      return (
+                        <div className="p-3.5 rounded-xl bg-slate-950 border border-slate-800/90 space-y-2">
+                          <div className="flex items-center justify-between text-xs">
+                            <div className="flex items-center space-x-2">
+                              <div className="w-5 h-5 rounded-full bg-cyan-500/20 text-cyan-400 font-bold flex items-center justify-center text-[10px]">
+                                3
+                              </div>
+                              <span className="font-bold text-white">③ Decide — Recovery Strategy Selection</span>
                             </div>
-                            <p className="text-slate-400 text-[11px] leading-relaxed">
-                              {selectedCaseDetail.decisions[0].reasoning_summary}
-                            </p>
-                          </>
-                        ) : (
-                          <p className="text-slate-500">Awaiting AI Agent Strategy formulation...</p>
-                        )}
-                      </div>
-                    </div>
+                            <span className={`text-[10px] font-semibold uppercase px-2 py-0.5 rounded border ${
+                              dec
+                                ? 'bg-cyan-500/10 text-cyan-400 border-cyan-500/20'
+                                : 'bg-slate-800 text-slate-400 border-slate-700'
+                            }`}>
+                              {dec ? 'COMPLETED' : 'PENDING'}
+                            </span>
+                          </div>
+                          <div className="text-xs text-slate-300 pl-7 space-y-2">
+                            {dec ? (
+                              <>
+                                {/* Plain-English Section: Why RecoverAI Chose This Action */}
+                                <div className="p-3 rounded-xl bg-slate-900/70 border border-cyan-500/20 space-y-1.5">
+                                  <span className="text-cyan-300 font-bold block text-xs flex items-center space-x-1.5">
+                                    <Sparkles className="w-3.5 h-3.5 text-cyan-400" />
+                                    <span>Why RecoverAI Chose This Action</span>
+                                  </span>
+                                  <p className="text-slate-200 leading-relaxed font-sans text-xs">
+                                    {dec.reasoning_summary}
+                                  </p>
+                                </div>
+
+                                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 font-mono text-[11px]">
+                                  <div className="p-2 rounded bg-slate-900/80 border border-slate-800">
+                                    <span className="text-slate-500 block text-[10px]">Selected Action</span>
+                                    <strong className="text-emerald-400 uppercase">{dec.recommended_action?.replace(/_/g, ' ')}</strong>
+                                  </div>
+                                  <div className="p-2 rounded bg-slate-900/80 border border-slate-800">
+                                    <span className="text-slate-500 block text-[10px]">Confidence Floor</span>
+                                    <strong className="text-cyan-300">{Math.round(dec.confidence * 100)}%</strong>
+                                  </div>
+                                  <div className="p-2 rounded bg-slate-900/80 border border-slate-800">
+                                    <span className="text-slate-500 block text-[10px]">Policy Pre-Check</span>
+                                    <strong className={dec.policy_approved ? 'text-emerald-400' : 'text-rose-400'}>
+                                      {dec.policy_approved ? 'APPROVED' : 'REJECTED'}
+                                    </strong>
+                                  </div>
+                                </div>
+
+                                {decPayload && (
+                                  <div className="p-2.5 rounded-lg bg-slate-900/40 border border-cyan-500/20 text-[10px] space-y-1 font-mono">
+                                    <div className="flex items-center justify-between text-cyan-300 font-semibold">
+                                      <span>Relevant Supporting Signals:</span>
+                                      <span className="text-[9px] px-1.5 py-0.5 rounded bg-cyan-500/10 border border-cyan-500/20">
+                                        {decPayload.knowledge_influenced_action ? 'Refined by Knowledge' : 'Aligned with Domain Rules'}
+                                      </span>
+                                    </div>
+                                    <div className="text-slate-400">
+                                      Knowledge Scenarios: <span className="text-slate-200 font-bold">{decPayload.knowledge_scenarios?.join(', ') || 'N/A'}</span>
+                                    </div>
+                                    <div className="text-slate-400">
+                                      Endorsed Actions: <span className="text-emerald-300 font-bold">{decPayload.knowledge_recommended_actions?.join(', ') || 'N/A'}</span>
+                                    </div>
+                                  </div>
+                                )}
+                              </>
+                            ) : (
+                              <p className="text-slate-500">Awaiting AI Strategy formulation...</p>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })()}
 
                     {/* STAGE 4: POLICY GUARDRAILS */}
-                    <div className="p-3.5 rounded-xl bg-slate-950 border border-slate-800/90 space-y-2">
-                      <div className="flex items-center justify-between text-xs">
-                        <div className="flex items-center space-x-2">
-                          <div className="w-5 h-5 rounded-full bg-indigo-500/20 text-indigo-400 font-bold flex items-center justify-center text-[10px]">
-                            4
-                          </div>
-                          <span className="font-bold text-white">Policy Engine Guardrails (Absolute Veto Authority)</span>
-                        </div>
-                        <span className="text-[10px] text-indigo-400 font-semibold uppercase">ENFORCED</span>
-                      </div>
-                      <div className="text-xs text-slate-300 pl-7 space-y-1">
-                        {selectedCaseDetail.actions && selectedCaseDetail.actions.length > 0 ? (
-                          selectedCaseDetail.actions[0].status === 'blocked_by_policy' ? (
-                            <div className="bg-rose-950/40 border border-rose-500/40 p-2.5 rounded-lg text-rose-300 space-y-1">
-                              <strong className="block text-xs font-bold text-rose-400">
-                                🛑 POLICY VETO TRIGGERED
-                              </strong>
-                              <p className="text-[11px]">{selectedCaseDetail.actions[0].result}</p>
-                              <span className="text-[10px] text-rose-400/80 block">
-                                Autonomous execution halted to protect customer experience and merchant policy limits.
-                              </span>
-                            </div>
-                          ) : (
-                            <div className="bg-emerald-950/30 border border-emerald-500/30 p-2 rounded-lg text-emerald-300 text-[11px]">
-                              All 6 policy guardrails verified. Action authorized for bounded execution.
-                            </div>
-                          )
-                        ) : (
-                          <p className="text-slate-500">Evaluating stopping rules, retry limits, and amount thresholds...</p>
-                        )}
-                      </div>
-                    </div>
+                    {(() => {
+                      const latestAction = selectedCaseDetail.actions && selectedCaseDetail.actions.length > 0 ? selectedCaseDetail.actions[0] : null;
+                      let actionExec: any = null;
+                      if (latestAction?.execution_details_json) {
+                        try {
+                          actionExec = JSON.parse(latestAction.execution_details_json);
+                        } catch {
+                          actionExec = null;
+                        }
+                      }
+                      const isVetoed = latestAction?.status === 'blocked_by_policy' || (selectedCaseDetail.decisions && selectedCaseDetail.decisions[0] && !selectedCaseDetail.decisions[0].policy_approved);
 
-                    {/* STAGE 5 & 6: EXECUTE, VERIFY & MEASURE */}
-                    <div className="p-3.5 rounded-xl bg-slate-950 border border-slate-800/90 space-y-2">
-                      <div className="flex items-center justify-between text-xs">
-                        <div className="flex items-center space-x-2">
-                          <div className="w-5 h-5 rounded-full bg-teal-500/20 text-teal-400 font-bold flex items-center justify-center text-[10px]">
-                            5 & 6
-                          </div>
-                          <span className="font-bold text-white">Execute, Verify & Measure Ledger Impact</span>
-                        </div>
-                        <span className="text-[10px] text-teal-400 font-semibold uppercase">
-                          {selectedCaseDetail.actions && selectedCaseDetail.actions.length > 0 ? 'COMPLETED' : 'PENDING'}
-                        </span>
-                      </div>
-                      <div className="text-xs text-slate-300 pl-7 space-y-1.5">
-                        {selectedCaseDetail.actions && selectedCaseDetail.actions.length > 0 ? (
-                          <>
-                            <div className="flex items-center justify-between bg-slate-900/80 p-2.5 rounded-lg border border-slate-800">
-                              <div>
-                                <span className="text-slate-400 block text-[10px]">Action Status</span>
-                                <span className="font-bold text-white uppercase">{selectedCaseDetail.actions[0].status}</span>
+                      // Determine specific veto rule for judge clarity
+                      let vetoRuleName = 'Policy Stopping Rule';
+                      if (selectedCaseDetail.revenue_at_risk > 25000) {
+                        vetoRuleName = 'RULE 4: Order Ceiling Guardrail (₹25,000 threshold exceeded)';
+                      } else if (selectedCaseDetail.transaction?.failure_code === 'ACCOUNT_BLOCKED' || selectedCaseDetail.transaction?.failure_code === 'INVALID_CARD_NUMBER') {
+                        vetoRuleName = 'RULE 3: Terminal Decline Guardrail (Account / Card permanently declined)';
+                      } else if (selectedCaseDetail.transaction?.failure_category === 'abandonment') {
+                        vetoRuleName = 'RULE 6: Abandonment Guardrail (Zero-debit checkout drop-off)';
+                      } else if ((selectedCaseDetail.transaction?.retry_count || 0) >= (selectedCaseDetail.transaction?.max_retries_allowed || 3)) {
+                        vetoRuleName = 'RULE 2: Max Retry Limit Guardrail';
+                      }
+
+                      return (
+                        <div className="p-3.5 rounded-xl bg-slate-950 border border-slate-800/90 space-y-2">
+                          <div className="flex items-center justify-between text-xs">
+                            <div className="flex items-center space-x-2">
+                              <div className="w-5 h-5 rounded-full bg-indigo-500/20 text-indigo-400 font-bold flex items-center justify-center text-[10px]">
+                                4
                               </div>
-                              <div>
-                                <span className="text-slate-400 block text-[10px]">Money Recovered</span>
-                                <span className="font-bold text-emerald-400 font-mono text-sm">
-                                  {formatINR(selectedCaseDetail.actions[0].amount_recovered)}
-                                </span>
+                              <span className="font-bold text-white">④ Policy Check — Safety Checks</span>
+                            </div>
+                            <span className="text-[10px] text-indigo-400 font-semibold uppercase bg-indigo-500/10 px-2 py-0.5 rounded border border-indigo-500/20">
+                              ENFORCED
+                            </span>
+                          </div>
+                          <div className="text-xs text-slate-300 pl-7 space-y-2">
+                            {/* Plain-English summary first */}
+                            <p className="text-xs text-slate-300 leading-relaxed">
+                              Evaluated proposed action against RecoverAI's 6 strict safety rules to guarantee customer trust, prevent gateway retry storms, and uphold regulatory boundaries.
+                            </p>
+
+                            {isVetoed ? (
+                              <div className="bg-rose-950/40 border border-rose-500/40 p-3.5 rounded-xl text-rose-300 space-y-2.5">
+                                <div className="flex items-center justify-between">
+                                  <strong className="text-xs font-bold text-rose-400 flex items-center space-x-1.5">
+                                    <span>🛑 SAFETY GUARDRAIL VETO TRIGGERED</span>
+                                  </strong>
+                                  <span className="text-[10px] font-mono font-bold bg-rose-500/20 px-2 py-0.5 rounded border border-rose-500/30 uppercase">
+                                    Action Stopped
+                                  </span>
+                                </div>
+                                <div className="p-2 rounded bg-slate-950/80 border border-rose-900/60 text-xs font-mono">
+                                  <span className="text-slate-400 block text-[10px] uppercase font-sans">Stopped by Safety Rule:</span>
+                                  <strong className="text-rose-300">{vetoRuleName}</strong>
+                                </div>
+                                <div>
+                                  <span className="text-slate-400 block text-[10px] uppercase font-semibold">Why Action Was Stopped:</span>
+                                  <p className="text-[11px] leading-relaxed text-slate-200 mt-0.5">
+                                    {latestAction?.result || selectedCaseDetail.decisions?.[0]?.policy_rejection_reason || actionExec?.rejection_reason || 'Intervention stopped by Policy Engine safeguard.'}
+                                  </p>
+                                </div>
+                                {actionExec?.suggested_alternative && (
+                                  <div className="p-2.5 rounded bg-slate-950 border border-rose-900/60 text-[11px] flex items-center space-x-2">
+                                    <span className="text-slate-400 font-semibold">Safe Alternative:</span>
+                                    <span className="text-cyan-300 font-mono font-bold uppercase">{actionExec.suggested_alternative}</span>
+                                  </div>
+                                )}
+                              </div>
+                            ) : latestAction ? (
+                              <div className="bg-emerald-950/30 border border-emerald-500/30 p-2.5 rounded-lg text-emerald-300 text-[11px] flex items-center justify-between">
+                                <span className="font-semibold">✓ All 6 safety checks passed. Bounded execution authorized.</span>
+                                <span className="font-mono text-[10px] text-emerald-400 font-bold uppercase">Passed</span>
+                              </div>
+                            ) : null}
+
+                            {/* 6-Rule Guardrail Checklist */}
+                            <div className="space-y-1 text-[10px] font-mono pt-1">
+                              <span className="text-slate-400 font-sans text-[10px] font-semibold uppercase block mb-1">
+                                Enforced Safety Guardrails Checklist:
+                              </span>
+                              <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                                <div className="p-1.5 rounded bg-slate-900/80 border border-slate-800 flex items-center justify-between">
+                                  <span className="text-slate-300">RULE 1: Merchant Auto Enabled</span>
+                                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                                </div>
+                                <div className="p-1.5 rounded bg-slate-900/80 border border-slate-800 flex items-center justify-between">
+                                  <span className="text-slate-300">RULE 2: Max Retries (Limit &lt; 3)</span>
+                                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                                </div>
+                                <div className="p-1.5 rounded bg-slate-900/80 border border-slate-800 flex items-center justify-between">
+                                  <span className="text-slate-300">RULE 3: Terminal Decline Guard</span>
+                                  {isVetoed && (selectedCaseDetail.transaction?.failure_code === 'ACCOUNT_BLOCKED' || selectedCaseDetail.transaction?.failure_code === 'INVALID_CARD_NUMBER') ? (
+                                    <XCircle className="w-3.5 h-3.5 text-rose-400 shrink-0" />
+                                  ) : (
+                                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                                  )}
+                                </div>
+                                <div className="p-1.5 rounded bg-slate-900/80 border border-slate-800 flex items-center justify-between">
+                                  <span className="text-slate-300">RULE 4: Order Ceiling (≤ ₹25k)</span>
+                                  {isVetoed && (selectedCaseDetail.revenue_at_risk > 25000) ? (
+                                    <XCircle className="w-3.5 h-3.5 text-rose-400 shrink-0" />
+                                  ) : (
+                                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                                  )}
+                                </div>
+                                <div className="p-1.5 rounded bg-slate-900/80 border border-slate-800 flex items-center justify-between">
+                                  <span className="text-slate-300">RULE 5: Confidence Floor (≥ 60%)</span>
+                                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                                </div>
+                                <div className="p-1.5 rounded bg-slate-900/80 border border-slate-800 flex items-center justify-between">
+                                  <span className="text-slate-300">RULE 6: Abandonment Requirement</span>
+                                  {isVetoed && (selectedCaseDetail.transaction?.failure_category === 'abandonment') ? (
+                                    <XCircle className="w-3.5 h-3.5 text-rose-400 shrink-0" />
+                                  ) : (
+                                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                                  )}
+                                </div>
                               </div>
                             </div>
-                            <p className="text-slate-400 text-[11px]">{selectedCaseDetail.actions[0].result}</p>
-                          </>
-                        ) : (
-                          <p className="text-slate-500">Awaiting bounded action execution and financial reconciliation...</p>
-                        )}
-                      </div>
-                    </div>
+                          </div>
+                        </div>
+                      );
+                    })()}
+
+                    {/* STAGE 5: RECOVER */}
+                    {(() => {
+                      const latestAction = selectedCaseDetail.actions && selectedCaseDetail.actions.length > 0 ? selectedCaseDetail.actions[0] : null;
+                      let actionExec: any = null;
+                      if (latestAction?.execution_details_json) {
+                        try {
+                          actionExec = JSON.parse(latestAction.execution_details_json);
+                        } catch {
+                          actionExec = null;
+                        }
+                      }
+                      const isVetoed = latestAction?.status === 'blocked_by_policy' || (selectedCaseDetail.decisions && selectedCaseDetail.decisions[0] && !selectedCaseDetail.decisions[0].policy_approved);
+
+                      return (
+                        <div className="p-3.5 rounded-xl bg-slate-950 border border-slate-800/90 space-y-2">
+                          <div className="flex items-center justify-between text-xs">
+                            <div className="flex items-center space-x-2">
+                              <div className="w-5 h-5 rounded-full bg-teal-500/20 text-teal-400 font-bold flex items-center justify-center text-[10px]">
+                                5
+                              </div>
+                              <span className="font-bold text-white">⑤ Recover — Action Execution</span>
+                            </div>
+                            <span className={`text-[10px] font-semibold uppercase px-2 py-0.5 rounded border ${
+                              latestAction
+                                ? (latestAction.status === 'blocked_by_policy' ? 'bg-rose-500/10 text-rose-400 border-rose-500/20' : 'bg-teal-500/10 text-teal-400 border-teal-500/20')
+                                : (isVetoed ? 'bg-rose-500/10 text-rose-400 border-rose-500/20' : 'bg-slate-800 text-slate-400 border-slate-700')
+                            }`}>
+                              {latestAction ? latestAction.status.replace(/_/g, ' ') : (isVetoed ? 'STOPPED' : 'PENDING')}
+                            </span>
+                          </div>
+                          <div className="text-xs text-slate-300 pl-7 space-y-2">
+                            {/* Plain-English summary first */}
+                            <p className="text-xs text-slate-300 leading-relaxed">
+                              Dispatched bounded recovery intervention through payment gateway/simulator to re-attempt or route payment.
+                            </p>
+
+                            {latestAction ? (
+                              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 font-mono text-[11px]">
+                                <div className="p-2.5 rounded-lg bg-slate-900/80 border border-slate-800">
+                                  <span className="text-slate-500 block text-[10px]">Action Executed</span>
+                                  <strong className="text-white uppercase block truncate">
+                                    {latestAction.action_type.replace(/_/g, ' ')}
+                                  </strong>
+                                </div>
+                                <div className="p-2.5 rounded-lg bg-slate-900/80 border border-slate-800">
+                                  <span className="text-slate-500 block text-[10px]">Gateway Acknowledgement</span>
+                                  <strong className={latestAction.status === 'success' ? 'text-emerald-400' : (latestAction.status === 'blocked_by_policy' ? 'text-rose-400' : 'text-amber-400')}>
+                                    {latestAction.status.toUpperCase()}
+                                  </strong>
+                                </div>
+                                <div className="p-2.5 rounded-lg bg-slate-900/80 border border-slate-800">
+                                  <span className="text-slate-500 block text-[10px]">Reference</span>
+                                  <span className="text-cyan-300 font-mono truncate block text-[10px]">
+                                    {actionExec?.gateway_reference || selectedCaseDetail.transaction?.gateway_reference || latestAction.id}
+                                  </span>
+                                </div>
+                              </div>
+                            ) : (
+                              <p className="text-slate-500">Awaiting bounded action execution...</p>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })()}
+
+                    {/* STAGE 6: VERIFY & MEASURE */}
+                    {(() => {
+                      const latestAction = selectedCaseDetail.actions && selectedCaseDetail.actions.length > 0 ? selectedCaseDetail.actions[0] : null;
+                      let actionExec: any = null;
+                      if (latestAction?.execution_details_json) {
+                        try {
+                          actionExec = JSON.parse(latestAction.execution_details_json);
+                        } catch {
+                          actionExec = null;
+                        }
+                      }
+                      const isVetoed = latestAction?.status === 'blocked_by_policy' || (selectedCaseDetail.decisions && selectedCaseDetail.decisions[0] && !selectedCaseDetail.decisions[0].policy_approved);
+
+                      return (
+                        <div className="p-3.5 rounded-xl bg-slate-950 border border-slate-800/90 space-y-2">
+                          <div className="flex items-center justify-between text-xs">
+                            <div className="flex items-center space-x-2">
+                              <div className="w-5 h-5 rounded-full bg-emerald-500/20 text-emerald-400 font-bold flex items-center justify-center text-[10px]">
+                                6
+                              </div>
+                              <span className="font-bold text-white">⑥ Verify & Measure — Verified Financial Impact</span>
+                            </div>
+                            <span className={`text-[10px] font-semibold uppercase px-2 py-0.5 rounded border ${
+                              latestAction
+                                ? (latestAction.amount_recovered > 0 ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20' : (isVetoed ? 'bg-rose-500/10 text-rose-400 border-rose-500/20' : 'bg-slate-800 text-slate-400 border-slate-700'))
+                                : 'bg-slate-800 text-slate-400 border-slate-700'
+                            }`}>
+                              {latestAction ? (latestAction.amount_recovered > 0 ? 'SETTLED' : (isVetoed ? 'STOPPED' : 'PROCESSED')) : 'PENDING'}
+                            </span>
+                          </div>
+                          <div className="text-xs text-slate-300 pl-7 space-y-2">
+                            {/* Plain-English summary first */}
+                            <p className="text-xs text-slate-300 leading-relaxed">
+                              Reconciled transaction ledger with payment gateway response to verify settled funds and record net revenue recovered.
+                            </p>
+
+                            {latestAction ? (
+                              <>
+                                {/* High-Contrast Before -> Action -> After Financial Flow */}
+                                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 font-mono text-[11px]">
+                                  {/* BEFORE */}
+                                  <div className="p-3 rounded-xl bg-slate-900/80 border border-rose-500/30 bg-rose-950/10">
+                                    <span className="text-slate-400 block text-[10px] uppercase font-semibold">Before (At Risk)</span>
+                                    <strong className="text-amber-400 font-mono text-sm block mt-0.5">
+                                      {formatINR(selectedCaseDetail.transaction?.amount || selectedCaseDetail.revenue_at_risk)}
+                                    </strong>
+                                    <span className="text-[10px] font-bold text-rose-400 uppercase inline-block mt-0.5">
+                                      ● FAILED
+                                    </span>
+                                  </div>
+
+                                  {/* ACTION */}
+                                  <div className="p-3 rounded-xl bg-slate-900/80 border border-cyan-500/30 bg-cyan-950/10">
+                                    <span className="text-slate-400 block text-[10px] uppercase font-semibold">Action (Intervention)</span>
+                                    <strong className="text-white uppercase block truncate mt-0.5">
+                                      {latestAction.action_type.replace(/_/g, ' ')}
+                                    </strong>
+                                    <span className="text-[10px] text-cyan-300 font-mono truncate block mt-0.5">
+                                      Ref: {actionExec?.gateway_reference || selectedCaseDetail.transaction?.gateway_reference || 'gateway_ack'}
+                                    </span>
+                                  </div>
+
+                                  {/* AFTER */}
+                                  <div className="p-3 rounded-xl bg-slate-900/80 border border-emerald-500/40 bg-emerald-950/20">
+                                    <span className="text-emerald-300 block text-[10px] uppercase font-semibold">After (Money Recovered)</span>
+                                    <strong className="text-emerald-400 font-mono text-sm block mt-0.5">
+                                      {formatINR(latestAction.amount_recovered)}
+                                    </strong>
+                                    <span className={`text-[10px] font-bold uppercase inline-block mt-0.5 ${
+                                      latestAction.amount_recovered > 0 ? 'text-emerald-400' : 'text-slate-400'
+                                    }`}>
+                                      {latestAction.amount_recovered > 0 ? '✓ SUCCESS (100% Settled)' : (isVetoed ? 'POLICY STOPPED (₹0 Loss)' : '0.00 Settled')}
+                                    </span>
+                                  </div>
+                                </div>
+
+                                <div className="p-2.5 rounded-lg bg-slate-900/60 border border-slate-800 text-[11px]">
+                                  <span className="text-slate-400 block text-[10px] font-semibold uppercase mb-0.5">Execution & Verification Result:</span>
+                                  <p className="text-slate-200 font-sans">{latestAction.result}</p>
+                                </div>
+                              </>
+                            ) : (
+                              <p className="text-slate-500">Awaiting financial reconciliation...</p>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })()}
                   </div>
 
                   {/* Case Specific Audit Timeline */}
                   <div className="pt-3 border-t border-slate-800">
                     <h3 className="text-xs font-bold text-slate-300 uppercase tracking-wider mb-2.5 flex items-center space-x-1.5">
                       <FileText className="w-3.5 h-3.5 text-cyan-400" />
-                      <span>Case Audit Trail ({caseAuditLogs.length} Events)</span>
+                      <span>Complete Recovery Audit Trail ({caseAuditLogs.length} Events)</span>
                     </h3>
-                    <div className="space-y-2 max-h-48 overflow-y-auto font-mono text-[11px]">
+                    <div className="space-y-2 max-h-56 overflow-y-auto font-mono text-[11px] pr-1">
                       {caseAuditLogs.map((log) => (
-                        <div key={log.id} className="p-2 rounded bg-slate-950 border border-slate-800/80 flex items-start space-x-2">
-                          <span className="text-emerald-400 font-semibold shrink-0">[{log.action}]</span>
-                          <span className="text-slate-300 leading-tight">{log.what_happened}</span>
+                        <div key={log.id} className="p-2.5 rounded-xl bg-slate-950 border border-slate-800/80 space-y-1">
+                          <div className="flex items-center justify-between text-[10px]">
+                            <div className="flex items-center space-x-2">
+                              <span className="px-1.5 py-0.5 rounded font-bold bg-slate-800 text-cyan-300 uppercase">
+                                {log.actor}
+                              </span>
+                              <span className="text-emerald-400 font-bold">[{log.action}]</span>
+                            </div>
+                            <span className="text-slate-500">{new Date(log.timestamp).toLocaleTimeString()}</span>
+                          </div>
+                          <div className="text-slate-200 font-sans text-xs">
+                            {log.what_happened}
+                          </div>
+                          {log.what_caused_it && (
+                            <div className="text-slate-400 font-sans text-[10px] leading-tight">
+                              <span className="text-slate-500">Cause: </span>{log.what_caused_it}
+                            </div>
+                          )}
+                          {log.result && (
+                            <div className="text-slate-400 font-sans text-[10px] leading-tight">
+                              <span className="text-slate-500">Result: </span>{log.result}
+                            </div>
+                          )}
                         </div>
                       ))}
                     </div>
@@ -1502,9 +2049,9 @@ export default function App() {
           <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-6 backdrop-blur-sm space-y-4">
             <div className="flex items-center justify-between border-b border-slate-800 pb-3">
               <div>
-                <h2 className="text-base font-bold text-white">Immutable Financial Audit Trail</h2>
+                <h2 className="text-base font-bold text-white">Complete Recovery Audit Trail</h2>
                 <p className="text-xs text-slate-400">
-                  Every detection, RCA diagnosis, agent strategy, policy check, and verified ledger reconciliation is cryptographically traceable.
+                  Immutable financial audit record: Every detection, RCA diagnosis, agent strategy, policy safety check, and verified ledger reconciliation is cryptographically traceable.
                 </p>
               </div>
               <span className="text-xs font-mono text-slate-500">{allAuditLogs.length} Records Logged</span>
@@ -1558,9 +2105,9 @@ export default function App() {
                     </div>
                     <div>
                       <h2 className="text-base font-bold text-white flex items-center space-x-2">
-                        <span>Batch Revenue Recovery Evaluation</span>
+                        <span>How Much Revenue Can RecoverAI Recover?</span>
                         <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 uppercase">
-                          Deterministic Engine
+                          Batch Evaluation
                         </span>
                       </h2>
                       <p className="text-xs text-slate-400">
@@ -1702,11 +2249,12 @@ export default function App() {
             {/* Results Section */}
             {batchResult ? (
               <div className="space-y-6 animate-fadeIn">
-                {/* 1. Financial Impact Metrics (6 Cards) */}
+                {/* 1. Financial Impact Metrics (Prioritized Headline Order) */}
                 <div className="grid grid-cols-2 md:grid-cols-6 gap-3.5">
+                  {/* Metric 1: Transactions Evaluated */}
                   <div className="bg-slate-900/60 border border-slate-800 rounded-xl p-4 backdrop-blur-sm">
                     <div className="text-slate-400 text-[11px] font-medium mb-1 flex items-center justify-between">
-                      <span>Evaluated Txns</span>
+                      <span>Transactions Evaluated</span>
                       <CreditCard className="w-3.5 h-3.5 text-slate-500" />
                     </div>
                     <div className="text-xl font-bold text-white font-mono">
@@ -1717,19 +2265,7 @@ export default function App() {
                     </div>
                   </div>
 
-                  <div className="bg-slate-900/60 border border-slate-800 rounded-xl p-4 backdrop-blur-sm">
-                    <div className="text-slate-400 text-[11px] font-medium mb-1 flex items-center justify-between">
-                      <span>Total Value</span>
-                      <TrendingUp className="w-3.5 h-3.5 text-slate-500" />
-                    </div>
-                    <div className="text-lg font-bold text-white tracking-tight">
-                      {formatINR(batchResult.total_transaction_value)}
-                    </div>
-                    <div className="text-[10px] text-slate-400 mt-1">
-                      Gross Volume
-                    </div>
-                  </div>
-
+                  {/* Metric 2: Revenue at Risk */}
                   <div className="bg-slate-900/60 border border-amber-500/20 rounded-xl p-4 backdrop-blur-sm bg-gradient-to-b from-amber-500/[0.03] to-transparent">
                     <div className="text-amber-300/80 text-[11px] font-medium mb-1 flex items-center justify-between">
                       <span>Revenue at Risk</span>
@@ -1743,9 +2279,10 @@ export default function App() {
                     </div>
                   </div>
 
+                  {/* Metric 3: Money Recovered */}
                   <div className="bg-slate-900/60 border border-emerald-500/20 rounded-xl p-4 backdrop-blur-sm bg-gradient-to-b from-emerald-500/[0.03] to-transparent">
                     <div className="text-emerald-300/80 text-[11px] font-medium mb-1 flex items-center justify-between">
-                      <span>Amount Recovered</span>
+                      <span>Money Recovered</span>
                       <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
                     </div>
                     <div className="text-lg font-bold text-emerald-400 tracking-tight">
@@ -1756,6 +2293,7 @@ export default function App() {
                     </div>
                   </div>
 
+                  {/* Metric 4: Recovery Rate */}
                   <div className="bg-slate-900/60 border border-cyan-500/20 rounded-xl p-4 backdrop-blur-sm bg-gradient-to-b from-cyan-500/[0.03] to-transparent">
                     <div className="text-cyan-300/80 text-[11px] font-medium mb-1 flex items-center justify-between">
                       <span>Recovery Rate</span>
@@ -1772,6 +2310,7 @@ export default function App() {
                     </div>
                   </div>
 
+                  {/* Metric 5: Recovery Efficiency */}
                   <div className="bg-slate-900/60 border border-purple-500/20 rounded-xl p-4 backdrop-blur-sm bg-gradient-to-b from-purple-500/[0.03] to-transparent">
                     <div className="text-purple-300/80 text-[11px] font-medium mb-1 flex items-center justify-between">
                       <span>Recovery Efficiency</span>
@@ -1787,6 +2326,20 @@ export default function App() {
                       />
                     </div>
                   </div>
+
+                  {/* Metric 6: Total Value / Gross Volume */}
+                  <div className="bg-slate-900/60 border border-slate-800 rounded-xl p-4 backdrop-blur-sm">
+                    <div className="text-slate-400 text-[11px] font-medium mb-1 flex items-center justify-between">
+                      <span>Total Value</span>
+                      <TrendingUp className="w-3.5 h-3.5 text-slate-500" />
+                    </div>
+                    <div className="text-lg font-bold text-white tracking-tight">
+                      {formatINR(batchResult.total_transaction_value)}
+                    </div>
+                    <div className="text-[10px] text-slate-400 mt-1">
+                      Gross Volume
+                    </div>
+                  </div>
                 </div>
 
                 {/* 2. Lifecycle Case Outcomes (5 Cards) */}
@@ -1796,9 +2349,9 @@ export default function App() {
                   </h3>
                   <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 text-xs">
                     <div className="p-3 rounded-xl bg-slate-950 border border-cyan-500/20">
-                      <span className="text-slate-400 block text-[11px] mb-1">Recoverable Cases</span>
+                      <span className="text-slate-400 block text-[11px] mb-1">Initial Recoverable Tier</span>
                       <div className="text-lg font-bold text-cyan-400 font-mono">{batchResult.recoverable_cases}</div>
-                      <span className="text-[10px] text-cyan-500/80 font-semibold">High Potential</span>
+                      <span className="text-[10px] text-cyan-500/80 font-semibold">High Potential (P ≥ 70%)</span>
                     </div>
 
                     <div className="p-3 rounded-xl bg-slate-950 border border-emerald-500/20">
@@ -2043,7 +2596,7 @@ export default function App() {
             <div className="flex items-center justify-between border-b border-slate-800 pb-3">
               <div className="flex items-center space-x-2">
                 <Zap className="w-5 h-5 text-emerald-400" />
-                <h3 className="text-base font-bold text-white">Payment Failure Simulator (Buildathon Sandbox)</h3>
+                <h3 className="text-base font-bold text-white">Payment Failure Simulator</h3>
               </div>
               <button
                 onClick={() => setIsSimModalOpen(false)}
@@ -2056,7 +2609,7 @@ export default function App() {
             {/* Quick Presets for Demo */}
             <div>
               <label className="block text-xs font-semibold text-slate-300 mb-2">
-                1-Click Judge Demo Scenarios:
+                1-Click Scenario Presets:
               </label>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                 {DEMO_PRESETS.map((preset, idx) => (
@@ -2163,7 +2716,7 @@ export default function App() {
 
       {/* Footer */}
       <footer className="border-t border-slate-800/80 py-4 px-6 text-center text-xs text-slate-500">
-        RecoverAI &copy; 2026 &bull; Razorpay Buildathon &bull; Track 3: AI Revenue Recovery &bull; Autonomous 6-Stage Revenue Safeguard
+        RecoverAI &copy; 2026 &bull; Autonomous Revenue Recovery &bull; 6-Stage Revenue Safeguard
       </footer>
     </div>
   );

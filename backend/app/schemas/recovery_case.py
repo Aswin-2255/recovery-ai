@@ -13,6 +13,7 @@ class RecoveryActionSummary(BaseModel):
     status: str
     amount_recovered: float
     result: Optional[str] = None
+    execution_details_json: Optional[str] = None
     executed_at: Optional[datetime] = None
     created_at: datetime
 
@@ -27,6 +28,7 @@ class AgentDecisionSummary(BaseModel):
     confidence: float
     policy_approved: bool
     policy_rejection_reason: Optional[str] = None
+    execution_payload_json: Optional[str] = None
     created_at: datetime
 
 
@@ -47,10 +49,25 @@ class RecoveryCaseRead(BaseModel):
     updated_at: datetime
 
 
+class RetrievedKnowledgeResponse(BaseModel):
+    scenario: str
+    failure_codes: List[str]
+    description: str
+    likely_root_cause: str
+    recommended_recovery_actions: List[str]
+    retry_guidance: str
+    risk_considerations: str
+    policy_considerations: str
+    do_not_retry_conditions: str
+    escalation_conditions: str
+    applicable_payment_methods: List[str] = Field(default_factory=list)
+
+
 class RecoveryCaseDetail(RecoveryCaseRead):
     transaction: Optional[TransactionRead] = None
     actions: List[RecoveryActionSummary] = Field(default_factory=list)
     decisions: List[AgentDecisionSummary] = Field(default_factory=list)
+    retrieved_knowledge: List[RetrievedKnowledgeResponse] = Field(default_factory=list)
 
 
 class RecoveryCaseFilter(BaseModel):
@@ -69,21 +86,7 @@ class DiagnoseResponse(BaseModel):
     systemic_degradation_detected: bool
     is_transient: bool
     diagnosed_at: datetime
-    retrieved_knowledge: List["RetrievedKnowledgeResponse"] = Field(default_factory=list)
-
-
-class RetrievedKnowledgeResponse(BaseModel):
-    scenario: str
-    failure_codes: List[str]
-    description: str
-    likely_root_cause: str
-    recommended_recovery_actions: List[str]
-    retry_guidance: str
-    risk_considerations: str
-    policy_considerations: str
-    do_not_retry_conditions: str
-    escalation_conditions: str
-    applicable_payment_methods: List[str] = Field(default_factory=list)
+    retrieved_knowledge: List[RetrievedKnowledgeResponse] = Field(default_factory=list)
 
 
 class DecideResponse(BaseModel):

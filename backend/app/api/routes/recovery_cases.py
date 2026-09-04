@@ -17,6 +17,7 @@ from app.schemas.recovery_action import (
     ExecuteActionResult,
     FullRecoveryWorkflowResult,
 )
+from app.services.recovery_knowledge_service import recovery_knowledge_service
 from app.services.recovery_lifecycle_service import recovery_lifecycle_service
 
 router = APIRouter(prefix="/api/recovery-cases", tags=["Recovery Cases"])
@@ -55,6 +56,23 @@ def get_recovery_case(
     ).first()
     if not case:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"RecoveryCase '{case_id}' not found.")
+
+    txn = db.query(Transaction).filter_by(id=case.transaction_id).first()
+    if txn:
+        knowledge_items = recovery_knowledge_service.retrieve(
+            failure_code=txn.failure_code,
+            payment_method=txn.payment_method,
+            amount=txn.amount,
+            retry_count=txn.retry_count,
+            diagnosis=case.root_cause_summary,
+        )
+        case.retrieved_knowledge = [
+            item.model_dump() if hasattr(item, "model_dump") else item.__dict__
+            for item in knowledge_items
+        ]
+    else:
+        case.retrieved_knowledge = []
+
     return case
 
 

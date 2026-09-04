@@ -24,7 +24,7 @@ from app.schemas.analytics import (
     CategoryBreakdownItem,
     ActionBreakdownItem,
 )
-from app.services.synthetic_generator import SyntheticPaymentGenerator
+from app.services.synthetic_generator import SyntheticPaymentGenerator, FAILURE_CATALOG
 from app.services.recovery_lifecycle_service import recovery_lifecycle_service
 
 
@@ -174,7 +174,7 @@ class AnalyticsService:
         evaluated_cases: List[RecoveryCase],
         txn_map: Dict[str, Transaction],
         evaluated_actions: List[RecoveryAction],
-        key_extractor: Callable[[Transaction], str],
+        key_extractor: Callable[[Optional[Transaction]], str],
     ) -> Dict[str, CategoryBreakdownItem]:
         """Reusable aggregation helper for category and failure code breakdowns."""
         items: Dict[str, Dict[str, Any]] = {}
@@ -182,7 +182,9 @@ class AnalyticsService:
 
         for case in evaluated_cases:
             txn = txn_map.get(case.transaction_id)
-            key = key_extractor(txn) if txn else "unknown"
+            key = key_extractor(txn)
+            if not key or key.strip() == "" or key == "none":
+                key = "unknown"
             if key not in items:
                 items[key] = {
                     "total_evaluated": 0,
@@ -191,18 +193,26 @@ class AnalyticsService:
                     "amount_recovered": 0.0,
                 }
             items[key]["total_evaluated"] += 1
-            items[key]["revenue_at_risk"] += txn.amount if txn else 0.0
+            items[key]["revenue_at_risk"] += txn.amount if txn else (case.revenue_at_risk or 0.0)
             if case.status == RecoveryCaseStatus.RECOVERED.value:
                 items[key]["recovered_count"] += 1
 
         for action in evaluated_actions:
             if action.status == ActionStatus.COMPLETED.value and action.amount_recovered > 0:
                 case = case_map.get(action.recovery_case_id)
-                if case:
-                    txn = txn_map.get(case.transaction_id)
-                    key = key_extractor(txn) if txn else "unknown"
-                    if key in items:
-                        items[key]["amount_recovered"] += action.amount_recovered
+                txn = txn_map.get(case.transaction_id) if case else None
+                key = key_extractor(txn)
+                if not key or key.strip() == "" or key == "none":
+                    key = "unknown"
+                if key not in items:
+                    case_amt = txn.amount if txn else (case.revenue_at_risk if case else action.amount_recovered)
+                    items[key] = {
+                        "total_evaluated": 1,
+                        "revenue_at_risk": case_amt,
+                        "recovered_count": 1,
+                        "amount_recovered": 0.0,
+                    }
+                items[key]["amount_recovered"] += action.amount_recovered
 
         return {
             key: CategoryBreakdownItem(
@@ -308,14 +318,26 @@ class AnalyticsService:
         recovery_rate = (recovered_count / total_cases_count * 100) if total_cases_count > 0 else 0.0
         recovery_efficiency = (total_recovered / total_at_risk * 100) if total_at_risk > 0 else 0.0
 
-        # Category and Failure Code Breakdowns via unified helper
+        # Category and Failure Code key extractors
+        def extract_category(t: Optional[Transaction]) -> str:
+            if not t:
+                return "unknown"
+            if t.failure_category and t.failure_category != "none":
+                return t.failure_category
+            if t.failure_code and t.failure_code in FAILURE_CATALOG:
+                return FAILURE_CATALOG[t.failure_code].category.value
+            return "unknown"
+
+        def extract_code(t: Optional[Transaction]) -> str:
+            if not t:
+                return "UNKNOWN"
+            return t.failure_code or "UNKNOWN"
+
         by_failure_category = self._build_breakdown(
-            evaluated_cases, txn_map, evaluated_actions,
-            lambda t: t.failure_category if t.failure_category else "unknown",
+            evaluated_cases, txn_map, evaluated_actions, extract_category
         )
         by_failure_code = self._build_breakdown(
-            evaluated_cases, txn_map, evaluated_actions,
-            lambda t: t.failure_code if t.failure_code else "UNKNOWN",
+            evaluated_cases, txn_map, evaluated_actions, extract_code
         )
 
         # Action Breakdown

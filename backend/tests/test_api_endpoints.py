@@ -50,7 +50,11 @@ def test_recovery_cases_api_flow(client: TestClient):
     # 2. Get case details
     get_resp = client.get(f"/api/recovery-cases/{case_id}")
     assert get_resp.status_code == 200
-    assert get_resp.json()["id"] == case_id
+    case_detail = get_resp.json()
+    assert case_detail["id"] == case_id
+    assert "retrieved_knowledge" in case_detail
+    assert len(case_detail["retrieved_knowledge"]) > 0
+    assert case_detail["retrieved_knowledge"][0]["scenario"] == "network_failure"
 
     # 3. Diagnose endpoint
     diag_resp = client.post(f"/api/recovery-cases/{case_id}/diagnose")

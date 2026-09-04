@@ -93,6 +93,7 @@ def test_financial_metrics_and_formula_correctness(batch_db):
     - recovery rate = (recovered cases / total failed cases) * 100
     - recovery efficiency = (amount recovered / revenue at risk) * 100
     - category breakdown sums match batch totals without double counting
+    - terminal resolution partition: recovered + stopped + unrecoverable == total failed cases
     """
     req = BatchEvaluationRequest(seed=123, total_transactions=80, include_incident=True)
     res = analytics_service.evaluate_batch(db=batch_db, request=req)
@@ -104,6 +105,9 @@ def test_financial_metrics_and_formula_correctness(batch_db):
     # Total cases evaluated in batch
     total_evaluated_cases = batch_db.query(RecoveryCase).count()
     assert total_evaluated_cases > 0
+
+    # Terminal state partition invariant
+    assert res.recovered_cases + res.policy_stopped_cases + res.unrecoverable_cases == total_evaluated_cases
 
     # Verify recovery rate formula
     expected_recovery_rate = round((res.recovered_cases / total_evaluated_cases * 100), 2)
@@ -136,6 +140,60 @@ def test_financial_metrics_and_formula_correctness(batch_db):
     # Verify action breakdown amount recovered matches total amount recovered
     action_total_recovered = sum(act.amount_recovered for act in res.by_recovery_action.values())
     assert round(action_total_recovered, 2) == round(res.total_amount_recovered, 2)
+
+
+def test_category_code_attribution_and_zero_risk_safeguard(batch_db):
+    """
+    Ensure that for every failure category and failure code:
+    1. amount_recovered <= revenue_at_risk
+    2. revenue_at_risk > 0 whenever amount_recovered > 0
+    3. known failure codes never resolve to 'unknown' in category breakdown
+    """
+    for seed in [42, 77, 101, 2024]:
+        req = BatchEvaluationRequest(seed=seed, total_transactions=60, include_incident=True)
+        res = analytics_service.evaluate_batch(db=batch_db, request=req)
+
+        # Check Category Breakdown invariants
+        for cat, item in res.by_failure_category.items():
+            assert item.amount_recovered <= item.revenue_at_risk + 0.01, (
+                f"Seed {seed} Category '{cat}': recovered ₹{item.amount_recovered} > risk ₹{item.revenue_at_risk}"
+            )
+            if item.amount_recovered > 0:
+                assert item.revenue_at_risk > 0, (
+                    f"Seed {seed} Category '{cat}': recovered ₹{item.amount_recovered} with zero revenue at risk"
+                )
+            assert item.recovery_efficiency <= 100.01
+
+        # Check Failure Code Breakdown invariants
+        for code, item in res.by_failure_code.items():
+            assert item.amount_recovered <= item.revenue_at_risk + 0.01, (
+                f"Seed {seed} Code '{code}': recovered ₹{item.amount_recovered} > risk ₹{item.revenue_at_risk}"
+            )
+            if item.amount_recovered > 0:
+                assert item.revenue_at_risk > 0, (
+                    f"Seed {seed} Code '{code}': recovered ₹{item.amount_recovered} with zero revenue at risk"
+                )
+            assert item.recovery_efficiency <= 100.01
+
+
+def test_recoverable_tier_classification_vs_recovered_outcome_semantics(batch_db):
+    """
+    Ensure clear semantic distinction:
+    - recoverable_cases represents initial high-probability classification tier (P >= 0.70)
+    - recovered_cases represents the verified lifecycle terminal status
+    - both metrics are logically coherent and non-negative
+    """
+    req = BatchEvaluationRequest(seed=42, total_transactions=100, include_incident=True)
+    res = analytics_service.evaluate_batch(db=batch_db, request=req)
+
+    total_failed_cases = batch_db.query(RecoveryCase).count()
+    assert res.recoverable_cases >= 0
+    assert res.recovered_cases >= 0
+    assert res.recoverable_cases <= total_failed_cases
+    assert res.recovered_cases <= total_failed_cases
+
+    # Terminal resolution states form complete partition
+    assert res.recovered_cases + res.policy_stopped_cases + res.unrecoverable_cases == total_failed_cases
 
 
 def test_policy_stopped_and_unrecoverable_cases(batch_db):

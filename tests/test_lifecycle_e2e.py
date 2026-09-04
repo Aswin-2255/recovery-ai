@@ -6,6 +6,7 @@ Validates the full 6-stage autonomous workflow:
 import sys
 from pathlib import Path
 from datetime import datetime, timezone
+from typing import cast
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -48,7 +49,7 @@ def e2e_db():
         # Seed small synthetic environment
         gen = SyntheticPaymentGenerator(seed=42)
         merchant = gen.generate_merchant()
-        customers = gen.generate_customers(merchant.id, count=10)
+        customers = gen.generate_customers(cast(str, merchant.id), count=10)
         session.add(merchant)
         session.add_all(customers)
         session.commit()
@@ -74,8 +75,8 @@ def test_e2e_full_lifecycle_detect_to_measure(e2e_db):
     # Step 1: Failed Transaction
     txn = Transaction(
         id="txn_e2e_transient_upi",
-        merchant_id=merchant.id,
-        customer_id=customer.id,
+        merchant_id=cast(str, merchant.id),
+        customer_id=cast(str, customer.id),
         amount=5499.0,
         currency="INR",
         payment_method=PaymentMethod.UPI.value,
@@ -94,12 +95,12 @@ def test_e2e_full_lifecycle_detect_to_measure(e2e_db):
     assert case.revenue_at_risk == 5499.0
 
     # Stage 2: Diagnose
-    diag_case = recovery_lifecycle_service.diagnose_case(db=e2e_db, case_id=case.id)
+    diag_case = recovery_lifecycle_service.diagnose_case(db=e2e_db, case_id=cast(str, case.id))
     assert diag_case.status == RecoveryCaseStatus.DIAGNOSED.value
     assert "BAD_REQUEST_GATEWAY_TIMEOUT" in (diag_case.root_cause_summary or "") or "NPCI" in (diag_case.root_cause_summary or "")
 
     # Stage 3: Decide
-    decision = recovery_lifecycle_service.decide_recovery_strategy(db=e2e_db, case_id=case.id)
+    decision = recovery_lifecycle_service.decide_recovery_strategy(db=e2e_db, case_id=cast(str, case.id))
     assert decision.recommended_action == ActionType.SMART_RETRY.value
     assert decision.confidence >= 0.60
     assert decision.policy_approved is True
@@ -107,8 +108,8 @@ def test_e2e_full_lifecycle_detect_to_measure(e2e_db):
     # Stage 4, 5, 6: Execute, Verify, Measure
     action = recovery_lifecycle_service.execute_recovery_action(
         db=e2e_db,
-        case_id=case.id,
-        action_type=decision.recommended_action,
+        case_id=cast(str, case.id),
+        action_type=cast(str, decision.recommended_action),
     )
     assert action.status in [ActionStatus.COMPLETED.value, ActionStatus.FAILED.value]
 

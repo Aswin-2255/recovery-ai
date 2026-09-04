@@ -23,6 +23,10 @@ from app.schemas.analytics import (
     OverviewMetrics,
     BreakdownMetrics,
     IncidentStatusRead,
+    BatchEvaluationRequest,
+    BatchEvaluationResponse,
+    CategoryBreakdownItem,
+    ActionBreakdownItem,
 )
 from app.schemas.audit_log import AuditLogRead, AuditLogFilter
 from app.schemas.webhook import RazorpayWebhookPayload, WebhookVerificationResult
@@ -47,6 +51,10 @@ __all__ = [
     "OverviewMetrics",
     "BreakdownMetrics",
     "IncidentStatusRead",
+    "BatchEvaluationRequest",
+    "BatchEvaluationResponse",
+    "CategoryBreakdownItem",
+    "ActionBreakdownItem",
     "AuditLogRead",
     "AuditLogFilter",
     "RazorpayWebhookPayload",
